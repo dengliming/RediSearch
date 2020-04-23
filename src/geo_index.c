@@ -4,6 +4,8 @@
 #include "rmalloc.h"
 #include "module.h"
 #include "rmutil/rm_assert.h"
+#include "geo/geohash_helper.h"
+#include "numeric_index.h"
 
 GeoIndex *GeoIndex_Create(const char *ixname) {
   GeoIndex *gi = rm_calloc(1, sizeof(*gi));
@@ -192,6 +194,29 @@ const char *GeoDistance_ToString(GeoDistance d) {
   return "<badunit>";
 }
 
+double extractUnitFactor(GeoDistance unit) {
+  double rv;
+  switch (unit) {
+    case GEO_DISTANCE_M:
+      rv = 1;
+      break;
+    case GEO_DISTANCE_KM:
+      rv = 1000;
+      break;
+    case GEO_DISTANCE_FT:
+      rv = 0.3048;
+      break;
+    case GEO_DISTANCE_MI:
+      rv = 1609.34;
+      break;  
+    default:
+      rv = -1;
+      assert(0);
+      break;
+  }
+  return rv;
+}
+
 /* Create a geo filter from parsed strings and numbers */
 GeoFilter *NewGeoFilter(double lon, double lat, double radius, const char *unit) {
   GeoFilter *gf = rm_malloc(sizeof(*gf));
@@ -199,6 +224,7 @@ GeoFilter *NewGeoFilter(double lon, double lat, double radius, const char *unit)
       .lon = lon,
       .lat = lat,
       .radius = radius,
+      .ranges = { 0 },
   };
   if (unit) {
     gf->unitType = GeoDistance_Parse(unit);
@@ -229,4 +255,122 @@ int GeoFilter_Validate(GeoFilter *gf, QueryError *status) {
   }
 
   return 1;
+}
+
+int encodeGeo(double *xy, double *bits) {
+    GeoHashBits hash = { .bits = (uint64_t)*bits, .step = GEO_STEP_MAX };
+    int rv = geohashEncodeWGS84(xy[0], xy[1], GEO_STEP_MAX, &hash);
+    *bits = (double)geohashAlign52Bits(hash);
+    return rv;
+}
+
+int decodeGeo(double bits, double *xy) {
+    GeoHashBits hash = { .bits = (uint64_t)bits, .step = GEO_STEP_MAX };
+    return geohashDecodeToLongLatWGS84(hash, xy);
+}
+
+/* Compute the sorted set scores min (inclusive), max (exclusive) we should
+ * query in order to retrieve all the elements inside the specified area
+ * 'hash'. The two scores are returned by reference in *min and *max. */
+static void scoresOfGeoHashBox(GeoHashBits hash, GeoHashFix52Bits *min, GeoHashFix52Bits *max) {
+    /* We want to compute the sorted set scores that will include all the
+     * elements inside the specified Geohash 'hash', which has as many
+     * bits as specified by hash.step * 2.
+     *
+     * So if step is, for example, 3, and the hash value in binary
+     * is 101010, since our score is 52 bits we want every element which
+     * is in binary: 101010?????????????????????????????????????????????
+     * Where ? can be 0 or 1.
+     *
+     * To get the min score we just use the initial hash value left
+     * shifted enough to get the 52 bit value. Later we increment the
+     * 6 bit prefis (see the hash.bits++ statement), and get the new
+     * prefix: 101011, which we align again to 52 bits to get the maximum
+     * value (which is excluded from the search). So we get everything
+     * between the two following scores (represented in binary):
+     *
+     * 1010100000000000000000000000000000000000000000000000 (included)
+     * and
+     * 1010110000000000000000000000000000000000000000000000 (excluded).
+     */
+    *min = geohashAlign52Bits(hash);
+    hash.bits++;
+    *max = geohashAlign52Bits(hash);
+}
+
+/* Search all eight neighbors + self geohash box */
+static void calcAllNeighbors(GeoHashRadius n, double lon, double lat,
+                                  double radius, GeoFilter *gf) {
+  GeoHashBits neighbors[RANGE_COUNT];
+  unsigned int i, last_processed = 0;
+
+  neighbors[0] = n.hash;
+  neighbors[1] = n.neighbors.north;
+  neighbors[2] = n.neighbors.south;
+  neighbors[3] = n.neighbors.east;
+  neighbors[4] = n.neighbors.west;
+  neighbors[5] = n.neighbors.north_east;
+  neighbors[6] = n.neighbors.north_west;
+  neighbors[7] = n.neighbors.south_east;
+  neighbors[8] = n.neighbors.south_west;
+
+  /* For each neighbor (*and* our own hashbox), get all the matching
+    * members and add them to the potential result list. */
+  for (i = 0; i < RANGE_COUNT; i++) {
+    if (HASHISZERO(neighbors[i])) {
+      continue;
+    }
+
+    /* When a huge Radius (in the 5000 km range or more) is used,
+      * adjacent neighbors can be the same, leading to duplicated
+      * elements. Skip every range which is the same as the one
+      * processed previously. */
+    if (last_processed &&
+      neighbors[i].bits == neighbors[last_processed].bits &&
+      neighbors[i].step == neighbors[last_processed].step) {
+      continue;
+    }
+
+    scoresOfGeoHashBox(neighbors[i], &gf->ranges[i][0], &gf->ranges[i][1]);
+    last_processed = i;
+  }
+}
+
+/* Calculate range for relevant squares around center.
+ * If min == max, range is included in other ranges */
+static int calcRanges(const GeoFilter *gf) {
+  double xy[2] = {gf->lon, gf->lat};
+  
+  double radius_meters = gf->radius * extractUnitFactor(gf->unitType);
+  if (radius_meters < 0) {
+    return -1;
+  }
+
+  GeoHashRadius georadius =
+    geohashGetAreasByRadiusWGS84(xy[0], xy[1], radius_meters);
+  
+  calcAllNeighbors(georadius, xy[0], xy[1], radius_meters, gf);
+
+  return 0;
+}
+
+// might make sense to decode outside and pass actual values...
+int isWithinRadius(double center, double point, double radius, double *distance) {
+  double xyCenter[2], xyPoint[2];
+  decodeGeo(center, xyCenter);
+  decodeGeo(point, xyPoint);
+  *distance = geohashGetDistance(xyCenter[0], xyCenter[1], xyPoint[0], xyPoint[1]);
+  if (*distance > radius) return 0;
+  return 1;
+}
+
+IndexIterator *NewGeoRangeIterator(GeoIndex *gi, const GeoFilter *gf, double weight) {
+  calcRanges(gf);
+  IndexIterator **iters = rm_calloc(RANGE_COUNT, sizeof(*iters));
+  for (size_t ii = 0; ii < RANGE_COUNT; ++ii) {
+    NumericFilter *filt = NewNumericFilter((double)gf->ranges[ii][0], 
+                                           (double)gf->ranges[ii][1], 1, 1);
+    iters[ii] = NewNumericFilterIterator(NULL, &filt, NULL);
+  }
+  IndexIterator *ret = NewUnionIterator(iters, RANGE_COUNT, NULL, 1, 1);
 }

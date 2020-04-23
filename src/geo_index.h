@@ -7,11 +7,16 @@
 #include "index_iterator.h"
 #include "search_ctx.h"
 #include "query_error.h"
+#include "geo/geohash_helper.h"
+#include "numeric_filter.h"
+#include "numeric_index.h"
 
 typedef struct GeoIndex {
   RedisModuleString *keyname;
   int isDeleted;
 } GeoIndex;
+
+#define RANGE_COUNT 9
 
 GeoIndex *GeoIndex_Create(const char *ixname);
 void GeoIndex_Free(GeoIndex *idx);
@@ -41,6 +46,7 @@ typedef struct GeoFilter {
   double lon;
   double radius;
   GeoDistance unitType;
+  GeoHashFix52Bits ranges[RANGE_COUNT][2]
 } GeoFilter;
 
 /* Create a geo filter from parsed strings and numbers */
@@ -57,5 +63,9 @@ int GeoFilter_Validate(GeoFilter *f, QueryError *status);
 int GeoFilter_Parse(GeoFilter *gf, ArgsCursor *ac, QueryError *status);
 void GeoFilter_Free(GeoFilter *gf);
 IndexIterator *NewGeoRangeIterator(GeoIndex *gi, const GeoFilter *gf, double weight);
+
+int encodeGeo(double *xy, double *bits);
+int decodeGeo(double bits, double *xy);
+int isWithinRadius(double center, double point, double radius, double *distance);
 
 #endif
