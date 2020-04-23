@@ -106,6 +106,7 @@ FILE(GLOB RS_SRC
     "src/aggregate/expr/*.c"
     "src/aggregate/functions/*.c"
     "src/aggregate/reducers/*.c"
+    "src/geo/*.c"
     "src/ext/*.c"
     "src/query_parser/*.c"
     "src/util/*.c"
