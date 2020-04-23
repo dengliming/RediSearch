@@ -396,7 +396,7 @@ FIELD_PREPROCESSOR(numericPreprocessor) {
 }
 
 FIELD_BULK_INDEXER(numericIndexer) {
-  NumericRangeTree *rt = bulk->indexDatas[INDEXTYPE_TO_POS(INDEXFLD_T_NUMERIC)];
+  NumericRangeTree *rt = bulk->indexDatas[IXFLDPOS_NUMERIC];
   if (!rt) {
     rt = bulk->indexDatas[IXFLDPOS_NUMERIC] = IDX_LoadRange(ctx->spec, fs, REDISMODULE_WRITE);
     if (!rt) {
@@ -419,26 +419,27 @@ FIELD_PREPROCESSOR(geoPreprocessor) {
   }
   *pos = '\0';
   pos++;
-  fdata->geoSlon = c;
-  fdata->geoSlat = pos;
+  GeoHashBits hash;
+  geohashEncodeWGS84(strtod(c, NULL), strtod(pos, NULL), GEO_STEP_MAX, &hash); 
+  fdata->numeric = (double)geohashAlign52Bits(hash);
+
+  // geo cannot be sortable
   return 0;
 }
 
 FIELD_BULK_INDEXER(geoIndexer) {
-  GeoIndex *gi = bulk->indexDatas[IXFLDPOS_GEO];
+  NumericRangeTree *gi = bulk->indexDatas[IXFLDPOS_GEO];
   if (!gi) {
     gi = bulk->indexDatas[IXFLDPOS_GEO] = IDX_LoadGeo(ctx->spec, fs, REDISMODULE_WRITE);
     if (!gi) {
-      QueryError_SetError(status, QUERY_EGENERIC, "Could not open geo index for indexing");
+      QueryError_SetError(status, QUERY_EGENERIC, "Could not open numeric index for geo indexing");
       return -1;
     }
   }
 
-  int rv = GeoIndex_AddStrings(gi, aCtx->doc.docId, fdata->geoSlon, fdata->geoSlat);
-  if (rv == REDISMODULE_ERR) {
-    QueryError_SetError(status, QUERY_EGENERIC, "Could not index geo value");
-    return -1;
-  }
+  size_t sz = NumericRangeTree_Add(gi, aCtx->doc.docId, fdata->numeric);
+  ctx->spec->stats.invertedSize += sz;
+  ctx->spec->stats.numRecords++;
   return 0;
 }
 

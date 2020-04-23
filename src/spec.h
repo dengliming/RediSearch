@@ -196,7 +196,7 @@ struct IndexSpec {
   Trie *terms; // for distance, etc.
   struct TagIndex **tags;
   struct NumericRangeTree **nums;
-  struct GeoIndex **geos;
+  struct NumericRangeTree **geos;
 
   RSSortingTable *sortables;
 
@@ -375,8 +375,8 @@ struct NumericRangeTree *IDX_LoadRange(IndexSpec *sp, const FieldSpec *fs, int f
 struct TagIndex *IDX_LoadTags(IndexSpec *sp, const FieldSpec *fs, int flags);
 struct TagIndex *IDX_LoadTagsFieldname(IndexSpec *sp, const char *s, int flags);
 struct NumericRangeTree *IDX_LoadRangeFieldname(IndexSpec *, const char *, int);
-struct GeoIndex* IDX_LoadGeo(IndexSpec *sp, const FieldSpec *fs, int flags);
-struct GeoIndex *IDX_LoadGeoFieldname(IndexSpec *, const char *, int);
+struct NumericRangeTree* IDX_LoadGeo(IndexSpec *sp, const FieldSpec *fs, int flags);
+struct NumericRangeTree *IDX_LoadGeoFieldname(IndexSpec *, const char *, int);
 /** Lock the index for reading */
 void IDX_ReadLock(IndexSpec *);
 

@@ -26,10 +26,10 @@ static uint64_t spec_unique_ids = 1;
 static const FieldSpec *getFieldCommon(const IndexSpec *spec, const char *name, size_t len,
                                        int useCase) {
   for (size_t i = 0; i < spec->numFields; i++) {
-    if (len != strlen(spec->fields[i].name)) {
+    const FieldSpec *fs = spec->fields + i;
+    if (len != strlen(fs->name)) {
       continue;
     }
-    const FieldSpec *fs = spec->fields + i;
     if (useCase) {
       if (!strncmp(fs->name, name, len)) {
         return fs;
@@ -577,8 +577,11 @@ DECLARE_IDXACC_COMMON(IDX_LoadRange, IDX_LoadRangeFieldname, INDEXFLD_T_NUMERIC,
 DECLARE_IDXACC_COMMON(IDX_LoadTags, IDX_LoadTagsFieldname, INDEXFLD_T_TAG, NewTagIndex(), tags,
                       TagIndex *)
 
-DECLARE_IDXACC_COMMON(IDX_LoadGeo, IDX_LoadGeoFieldname, INDEXFLD_T_GEO, GeoIndex_Create(sp->name),
-                      geos, GeoIndex *)
+DECLARE_IDXACC_COMMON(IDX_LoadGeo, IDX_LoadGeoFieldname, INDEXFLD_T_GEO,
+                      NewNumericRangeTree(), geos, NumericRangeTree *)
+
+//DECLARE_IDXACC_COMMON(IDX_LoadGeo, IDX_LoadGeoFieldname, INDEXFLD_T_GEO, GeoIndex_Create(sp->name),
+//                      geos, GeoIndex *)
 
 IndexSpecCache *IndexSpec_GetSpecCache(const IndexSpec *spec) {
   if (!spec->spcache) {
