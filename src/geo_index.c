@@ -162,6 +162,7 @@ done:
   return docIds;
 }
 
+/*
 IndexIterator *NewGeoRangeIterator(GeoIndex *gi, const GeoFilter *gf, double weight) {
   size_t sz;
   t_docId *docIds = geoRangeLoad(gi, gf, &sz);
@@ -172,7 +173,7 @@ IndexIterator *NewGeoRangeIterator(GeoIndex *gi, const GeoFilter *gf, double wei
   IndexIterator *ret = NewIdListIterator(docIds, (t_offset)sz, weight);
   rm_free(docIds);
   return ret;
-}
+}*/
 
 GeoDistance GeoDistance_Parse(const char *s) {
 #define X(c, val)            \
@@ -224,7 +225,6 @@ GeoFilter *NewGeoFilter(double lon, double lat, double radius, const char *unit)
       .lon = lon,
       .lat = lat,
       .radius = radius,
-      .ranges = { 0 },
   };
   if (unit) {
     gf->unitType = GeoDistance_Parse(unit);
@@ -300,7 +300,7 @@ static void scoresOfGeoHashBox(GeoHashBits hash, GeoHashFix52Bits *min, GeoHashF
 
 /* Search all eight neighbors + self geohash box */
 static void calcAllNeighbors(GeoHashRadius n, double lon, double lat,
-                                  double radius, GeoFilter *gf) {
+                                double radius, GeoHashRange *ranges) {
   GeoHashBits neighbors[RANGE_COUNT];
   unsigned int i, last_processed = 0;
 
@@ -331,16 +331,17 @@ static void calcAllNeighbors(GeoHashRadius n, double lon, double lat,
       continue;
     }
 
-    scoresOfGeoHashBox(neighbors[i], &gf->ranges[i][0], &gf->ranges[i][1]);
+    scoresOfGeoHashBox(neighbors[i], (GeoHashFix52Bits *)&ranges[i].min, 
+                                     (GeoHashFix52Bits *)&ranges[i].max);
     last_processed = i;
   }
 }
 
 /* Calculate range for relevant squares around center.
  * If min == max, range is included in other ranges */
-static int calcRanges(const GeoFilter *gf) {
+static int calcRanges(const GeoFilter *gf, GeoHashRange *ranges) {
   double xy[2] = {gf->lon, gf->lat};
-  
+
   double radius_meters = gf->radius * extractUnitFactor(gf->unitType);
   if (radius_meters < 0) {
     return -1;
@@ -349,28 +350,39 @@ static int calcRanges(const GeoFilter *gf) {
   GeoHashRadius georadius =
     geohashGetAreasByRadiusWGS84(xy[0], xy[1], radius_meters);
   
-  calcAllNeighbors(georadius, xy[0], xy[1], radius_meters, gf);
-
+  calcAllNeighbors(georadius, xy[0], xy[1], radius_meters, ranges);
   return 0;
 }
 
-// might make sense to decode outside and pass actual values...
+int isWithinRadiusLonLat(double lon1, double lat1,
+                         double lon2, double lat2,
+                         double radius, double *distance) {
+  *distance = geohashGetDistance(lon1, lat1, lon2, lat2);
+  if (*distance > radius) return 0;
+  return 1;
+}
+                         
 int isWithinRadius(double center, double point, double radius, double *distance) {
   double xyCenter[2], xyPoint[2];
   decodeGeo(center, xyCenter);
   decodeGeo(point, xyPoint);
-  *distance = geohashGetDistance(xyCenter[0], xyCenter[1], xyPoint[0], xyPoint[1]);
-  if (*distance > radius) return 0;
-  return 1;
+  return isWithinRadiusLonLat(xyCenter[0], xyCenter[1], xyPoint[0], xyPoint[1],
+                                    radius, distance);
 }
 
 IndexIterator *NewGeoRangeIterator(GeoIndex *gi, const GeoFilter *gf, double weight) {
-  calcRanges(gf);
+  GeoHashRange ranges[RANGE_COUNT] = {0};
+  calcRanges(gf, ranges);
+
+  int iterCount = 0;
   IndexIterator **iters = rm_calloc(RANGE_COUNT, sizeof(*iters));
   for (size_t ii = 0; ii < RANGE_COUNT; ++ii) {
-    NumericFilter *filt = NewNumericFilter((double)gf->ranges[ii][0], 
-                                           (double)gf->ranges[ii][1], 1, 1);
-    iters[ii] = NewNumericFilterIterator(NULL, &filt, NULL);
+    if (ranges[ii].min != ranges[ii].max) {
+      NumericFilter *filt = NewNumericFilter(ranges[ii].min, ranges[ii].max, 1, 1);
+      iters[iterCount++] = NewNumericFilterIterator(NULL, filt, NULL);
+    }
   }
-  IndexIterator *ret = NewUnionIterator(iters, RANGE_COUNT, NULL, 1, 1);
+  iters = rm_realloc(iters, iterCount * sizeof(*iters));
+  IndexIterator *it = NewUnionIterator(iters, iterCount, NULL, 1, 1);
+  return it;
 }

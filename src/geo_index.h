@@ -46,7 +46,6 @@ typedef struct GeoFilter {
   double lon;
   double radius;
   GeoDistance unitType;
-  GeoHashFix52Bits ranges[RANGE_COUNT][2]
 } GeoFilter;
 
 /* Create a geo filter from parsed strings and numbers */
